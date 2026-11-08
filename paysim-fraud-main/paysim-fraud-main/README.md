@@ -1,116 +1,194 @@
-# Mobile Money Fraud Detection (PaySim)
+# PaySim Fraud Risk Scoring
 
-A machine learning project that detects fraudulent mobile money transactions on the PaySim synthetic dataset. It covers exploratory analysis, feature engineering, handling extreme class imbalance, model comparison, interpretability with SHAP, a time-based validation check, and a Streamlit demo app.
+A Python-based application that estimates the probability of fraud in mobile-money transactions using a saved XGBoost classification model and an interactive Streamlit interface.
 
-**Live demo:** https://paysim-fraud-detect.streamlit.app
+**Author:** Madhav Kumar
 
-## Problem
+## Overview
 
-Fraud is rare (about 0.13% of all transactions), so accuracy is meaningless: a model that predicts "not fraud" every time is 99.87% accurate and catches nothing. The goal is to catch as many frauds as possible while keeping false alarms low, so models are evaluated with precision, recall, F1 and PR-AUC.
+Fraud detection is an imbalanced classification problem: fraudulent transactions make up a small proportion of the available records. This project explores transaction-level fraud indicators in the PaySim synthetic mobile-money dataset and provides an interface for scoring an individual transaction.
 
-## Dataset
+The repository contains three main parts:
 
-- PaySim, a synthetic mobile money simulation based on real transaction logs: about 6.3 million transactions over 30 days (744 hourly steps).
-- Source: [Synthetic Financial Datasets For Fraud Detection (Kaggle)](https://www.kaggle.com/datasets/ealaxi/paysim1)
-- Credit: Lopez-Rojas, E. A., Elmir, A., Axelsson, S. "PaySim: A financial mobile money simulator for fraud detection." Licensed CC BY-SA 4.0.
-- The raw CSV (about 470 MB) is not included in this repository. Download it from Kaggle and place it in a `data/` folder.
+- A Streamlit application for entering transaction details and viewing a predicted fraud probability.
+- A Jupyter notebook for initial dataset exploration, feature preparation and creation of a stratified train/test split.
+- A serialized XGBoost model artifact used by the application for inference.
 
-## Approach
+The notebook currently does **not** contain the complete model-training and evaluation workflow. The saved model is available for inference, but the steps that produced it are not fully reproducible from the notebook as currently committed.
 
-1. **Exploration:** fraud occurs only in `TRANSFER` and `CASH_OUT` transactions, so the data was filtered to those two types (2.77 million rows).
-2. **Feature engineering:**
-   - `errorOrig = oldbalanceOrg - amount - newbalanceOrig`
-   - `errorDest = oldbalanceDest + amount - newbalanceDest`
-   - These capture balance inconsistencies that appear in fraudulent transactions.
-3. **Dropped columns:** `nameOrig` and `nameDest` (identifiers that would cause overfitting), `isFlaggedFraud` (rule-based flag, not a real feature) and `step`.
-4. **Split:** stratified 80/20 train/test split, done before any resampling.
-5. **Imbalance handling:** class weights (`class_weight="balanced"`, `scale_pos_weight`) rather than resampling.
-6. **Models:** Logistic Regression, Random Forest, XGBoost.
-7. **Evaluation:** confusion matrix, precision, recall, F1, ROC-AUC and PR-AUC.
-8. **Interpretation:** feature importance and SHAP.
-9. **Robustness checks:** an ablation without the engineered features, and a time-based split.
+## Features
 
-## Results
+- **Transaction scoring:** Load the saved XGBoost model and obtain a fraud probability for an entered transaction.
+- **Interactive Streamlit UI:** Enter transaction type, amount, and sender/receiver balances before and after the transaction.
+- **Balance-based feature engineering:** Calculate sender and receiver balance-discrepancy features before prediction.
+- **Adjustable decision threshold:** Select the probability threshold used to flag a transaction.
+- **Dataset exploration:** Inspect the PaySim data, column types, descriptive statistics, missing values and fraud-class distribution in the notebook.
+- **Class-imbalance awareness:** Explore the highly imbalanced target distribution rather than relying on accuracy alone.
 
-Test set: 554,082 transactions, of which 1,643 are fraud.
+## Technology Stack
 
-| Model | PR-AUC | Notes |
-|---|---|---|
-| Logistic Regression | 0.56 | Recall 0.88 but precision only 0.04 (35,872 false alarms) |
-| Random Forest | ~1.00 | Precision 0.998, recall 0.997 (3 false positives, 5 missed frauds) |
-| XGBoost | ~1.00 | Comparable to Random Forest |
+| Area | Technologies |
+|---|---|
+| Language | Python |
+| Data processing | Pandas |
+| Machine learning | XGBoost, scikit-learn |
+| Model loading | Joblib |
+| User interface | Streamlit |
+| Experiment environment | Jupyter Notebook |
 
-Additional checks:
+## Repository Structure
 
-- **Ablation:** Random Forest without `errorOrig` and `errorDest` still reaches PR-AUC 0.941, so the raw balance columns carry most of the signal, and the engineered features add further lift.
-- **Time-based split:** training on steps 1 to 599 and testing on steps 600 to 744 (1,618 frauds in the test period) gives PR-AUC 1.0 for XGBoost, so the result holds on later data and is not an artifact of the random split.
+```text
+.
+├── app.py
+├── paysim-fraud.ipynb
+├── requirements.txt
+├── models/
+│   └── xgb_fraud.joblib
+└── images/
+    ├── feature_importance.png
+    ├── pr_curves.png
+    └── shap_summary.png
+```
 
-### Precision-Recall curves
+The raw PaySim CSV is not included in the repository. The notebook expects the dataset at `Data/paysim-fraud.csv`. Create that directory and place the dataset there before running the notebook.
 
-![PR curves](images/pr_curves.png)
+## How the Application Works
 
-### Feature importance (Random Forest)
+1. The user selects a transaction type: `TRANSFER` or `CASH_OUT`.
+2. The user enters the transaction amount and sender/receiver balances before and after the transaction.
+3. The application converts the transaction type into the numeric representation expected by the saved model.
+4. It derives two additional features:
 
-![Feature importance](images/feature_importance.png)
+   ```python
+   errorOrig = oldbalanceOrg - amount - newbalanceOrig
+   errorDest = oldbalanceDest + amount - newbalanceDest
+   ```
 
-### SHAP summary (XGBoost)
+5. The application arranges the eight model input features in the expected order and calls `predict_proba()`.
+6. The resulting probability is compared with the user-selected threshold. Transactions above the threshold are flagged as likely fraud; the remaining transactions are shown as not flagged.
 
-![SHAP summary](images/shap_summary.png)
+A lower threshold generally flags more transactions and can increase false positives. A higher threshold generally produces fewer alerts but can miss more fraudulent transactions. The current default threshold is 0.50; it has not been selected through a documented business-cost optimization process in the checked-in notebook.
 
-## Key findings
+## Dataset and Preparation
 
-- `errorOrig` is the strongest signal. High values push predictions strongly toward fraud.
-- Fraudulent transactions typically empty the sender's account (`newbalanceOrig` close to 0) and move the money out, which is the pattern the models learn.
-- Logistic Regression underperforms because the fraud pattern is non-linear.
+The project uses the synthetic PaySim mobile-money transaction dataset. The raw data file is intentionally not included because of its size.
+
+The notebook currently performs these preparation steps:
+
+1. Loads the CSV and inspects its structure, descriptive statistics and missing-value counts.
+2. Examines the distribution of the fraud target.
+3. Filters the data to `TRANSFER` and `CASH_OUT` transaction types.
+4. Engineers `errorOrig` and `errorDest` from the transaction balance fields.
+5. Encodes the transaction type as a numeric feature.
+6. Removes the target, identifier columns, the rule-based `isFlaggedFraud` field and the `step` column from the feature matrix.
+7. Creates a stratified 80/20 train/test split.
+
+**Reproducibility note:** The committed notebook currently ends after the train/test split. It does not currently show the complete model fitting, model comparison, threshold-selection or evaluation process. The visual files in `images/` are included as project artifacts, but their generation is not reproduced by the notebook as currently committed.
+
+## Getting Started
+
+### Prerequisites
+
+- Python installed
+- pip
+- Git
+- The PaySim CSV file if you intend to run the notebook
+
+### 1. Clone the repository
+
+Use the HTTPS clone address shown in the repository's **Code** menu:
+
+```bash
+git clone <repository-clone-address>
+```
+
+Move into the directory that contains `app.py`, `paysim-fraud.ipynb` and `requirements.txt`. In the downloaded repository layout, this is `paysim-fraud-main/paysim-fraud-main/`.
+
+### 2. Create a virtual environment
+
+**Windows PowerShell**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+**macOS / Linux**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install dependencies
+
+From the directory containing `requirements.txt`, run:
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 4. Run the Streamlit application
+
+Make sure `models/xgb_fraud.joblib` is present, then run:
+
+```bash
+streamlit run app.py
+```
+
+Streamlit prints a local address in the terminal. Open that address in your browser to use the application.
+
+### 5. Run the notebook
+
+Create a directory named `Data` alongside the notebook and place the CSV file at:
+
+```text
+Data/paysim-fraud.csv
+```
+
+Open `paysim-fraud.ipynb` in Jupyter and execute its cells in order. The notebook currently covers exploratory inspection, filtering, feature construction and train/test splitting; it does not reproduce the saved model's training process.
+
+## Model Input Features
+
+The Streamlit app supplies these eight features to the classifier:
+
+| Feature | Description |
+|---|---|
+| `type` | Encoded transaction type (`TRANSFER` or `CASH_OUT`) |
+| `amount` | Transaction amount |
+| `oldbalanceOrg` | Sender balance before the transaction |
+| `newbalanceOrig` | Sender balance after the transaction |
+| `oldbalanceDest` | Receiver balance before the transaction |
+| `newbalanceDest` | Receiver balance after the transaction |
+| `errorOrig` | Sender balance discrepancy |
+| `errorDest` | Receiver balance discrepancy |
+
+The feature names, transformations and ordering must remain consistent with the model artifact. If the model is retrained, update the application and artifact together.
 
 ## Limitations
 
-- PaySim is simulated data. Its fraud pattern is consistent across the whole period, which is why scores are near perfect. Real-world fraud changes as fraudsters adapt, so similar performance should not be expected in production.
-- SHAP shows what the model relies on, not what causes fraud.
-- The decision threshold was left at the default 0.5. In a real system it should be tuned to the business cost of false alarms versus missed fraud.
+- PaySim is synthetic data. Results on this dataset do not establish real-world fraud-detection performance.
+- The training process for the committed model is not fully documented or reproducible from the current notebook.
+- The default decision threshold is 0.50 and has not been tuned against a documented validation objective.
+- The application scores one manually entered transaction at a time; it is not a streaming or production transaction-monitoring system.
+- The included SHAP and other plot images are static artifacts. The current Streamlit application does not generate per-transaction SHAP explanations.
+- Model probabilities should be interpreted as outputs of this particular saved model, not as certainty that a transaction is fraudulent.
 
-## Demo app
+## Future Improvements
 
-The Streamlit app takes transaction details (type, amount, sender and receiver balances before and after), computes the engineered features, and returns a fraud probability with an adjustable decision threshold.
+- Complete a reproducible training pipeline that saves the model artifact from documented code.
+- Compare baseline and tree-based classifiers using precision, recall, F1-score and PR-AUC.
+- Select a classification threshold using a validation set and an explicit false-positive/false-negative cost trade-off.
+- Add automated tests for feature engineering, feature order, model loading and prediction behavior.
+- Add per-transaction explanations and integrate them into the Streamlit interface.
+- Record model version, training configuration and feature metadata alongside the model artifact.
 
-Example inputs: a `TRANSFER` of 1,810,000 where the sender goes from 1,810,000 to 0 and the receiver stays at 0 is flagged as fraud with probability near 100%.
+## Responsible Use
 
-## How to run
-
-```bash
-git clone https://github.com/fathimathfarha24/paysim-fraud
-cd paysim-fraud
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-# source .venv/bin/activate   # macOS/Linux
-python -m pip install -r requirements.txt
-```
-
-1. Download the dataset from Kaggle and place the CSV in `data/`.
-2. Open `paysim-fraud.ipynb` and run all cells to reproduce the analysis and save the model to `models/`.
-3. Launch the app:
-
-```bash
-python -m streamlit run app.py
-```
-
-## Project structure
-
-```
-.
-├── app.py                  # Streamlit demo
-├── paysim-fraud.ipynb      # Full analysis notebook
-├── requirements.txt
-├── models/
-│   └── xgb_fraud.joblib    # Trained XGBoost model
-├── images/                 # Plots used in this README
-└── data/                   # Dataset (not committed)
-```
-
-## Tech stack
-
-Python, pandas, scikit-learn, XGBoost, SHAP, matplotlib, Streamlit.
+This project is intended for educational and demonstration purposes. It uses a synthetic dataset and should not be used as the basis for real financial decisions or production fraud controls.
 
 ## Author
 
-Fathimath Farha
+**Madhav Kumar**
